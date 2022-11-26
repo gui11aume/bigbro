@@ -1,5 +1,9 @@
+# See BigBroAttention(...). Depending on whether deepspeed
+# is available, checkpointing is enabled or not.
+
 import transformers
 import torch
+
 
 logger = transformers.utils.logging.get_logger(__name__)
 
@@ -1029,6 +1033,7 @@ class BigBroForTokenClassification(transformers.BigBirdForTokenClassification):
         loss = None
         if labels is not None:
             # =================
+            # Modify weights here if needed.
             #loss_fct = CrossEntropyLoss()
             #weight = torch.tensor([1.,100.], device=logits.device, dtype=logits.dtype)
             loss_fct = torch.nn.CrossEntropyLoss(weight=weight)
