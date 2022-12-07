@@ -1,9 +1,5 @@
-# See BigBroAttention(...). Depending on whether deepspeed
-# is available, checkpointing is enabled or not.
-
 import transformers
 import torch
-
 
 logger = transformers.utils.logging.get_logger(__name__)
 
@@ -146,13 +142,6 @@ class BigBroAttention(transformers.models.big_bird.modeling_big_bird.BigBirdAtte
         # =================
         #super().__init__()
         super(transformers.models.big_bird.modeling_big_bird.BigBirdAttention, self).__init__()
-        try:
-            import deepspeed
-            self.checkpointing_maybe = deepspeed.checkpointing.checkpoint
-            self.use_deepspeed_checkpointing = True
-        except ImportError:
-            self.checkpointing_maybe = lambda x: x
-            self.use_deepspeed_checkpointing = False
         # =================
         self.attention_type = config.attention_type
         self.config = config
@@ -284,20 +273,13 @@ class BigBroAttention(transformers.models.big_bird.modeling_big_bird.BigBirdAtte
             #self_outputs = self.self(
             #    hidden_states, band_mask, from_mask, to_mask, from_blocked_mask, to_blocked_mask, output_attentions
             #)
-            # Use DeepSpeed checkpointing if possible (reduces memory footprint).
-            self_outputs = self.checkpointing_maybe(self.self,
-                  hidden_states, sinusoidal_pos, band_mask, from_mask, to_mask, from_blocked_mask, to_blocked_mask, output_attentions
+            self_outputs = self.self(
+                hidden_states, sinusoidal_pos, band_mask, from_mask, to_mask, from_blocked_mask, to_blocked_mask, output_attentions
             )
             # =================
 
         attention_output = self.output(self_outputs[0], hidden_states)
-        # =================
-        # 'self_outputs' is a tensor and not a tuple.
-        if self.use_deepspeed_checkpointing:
-            outputs = (attention_output,) + (self_outputs[1:],)  # add attentions if we output them
-        else:
-            outputs = (attention_output,) + self_outputs[1:]  # add attentions if we output them
-        # =================
+        outputs = (attention_output,) + self_outputs[1:]  # add attentions if we output them
         return outputs
 
 
@@ -966,8 +948,8 @@ class BigBroForTokenClassification(transformers.BigBirdForTokenClassification):
         classifier_dropout = ( 
             config.classifier_dropout if config.classifier_dropout is not None else config.hidden_dropout_prob
         )
-        self.dropout = nn.Dropout(classifier_dropout)
-        self.classifier = nn.Linear(config.hidden_size, config.num_labels)
+        self.dropout = torch.nn.Dropout(classifier_dropout)
+        self.classifier = torch.nn.Linear(config.hidden_size, config.num_labels)
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -976,7 +958,7 @@ class BigBroForTokenClassification(transformers.BigBirdForTokenClassification):
         # Call to self.post_init() will redirect here instead
         # of BigBirdPreTrainedModel.
         """Initialize the weights"""
-        if isinstance(module, nn.Linear):
+        if isinstance(module, torch.nn.Linear):
             # Slightly different from the TF version which uses truncated_normal for initialization
             # cf https://github.com/pytorch/pytorch/pull/5617
             module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
@@ -986,11 +968,11 @@ class BigBroForTokenClassification(transformers.BigBirdForTokenClassification):
         elif isinstance(module, transformers.models.roformer.modeling_roformer.RoFormerSinusoidalPositionalEmbedding):
             pass
         # =================
-        elif isinstance(module, nn.Embedding):
+        elif isinstance(module, torch.nn.Embedding):
             module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
             if module.padding_idx is not None:
                 module.weight.data[module.padding_idx].zero_()
-        elif isinstance(module, nn.LayerNorm):
+        elif isinstance(module, torch.nn.LayerNorm):
             module.bias.data.zero_()
             module.weight.data.fill_(1.0)
 
@@ -1039,6 +1021,125 @@ class BigBroForTokenClassification(transformers.BigBirdForTokenClassification):
             loss_fct = torch.nn.CrossEntropyLoss(weight=weight)
             # =================
             loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
+
+        if not return_dict:
+            output = (logits,) + outputs[2:]
+            return ((loss,) + output) if loss is not None else output
+
+        # =================
+        #return TokenClassifierOutput(
+        return transformers.modeling_outputs.TokenClassifierOutput(
+        # =================
+            loss=loss,
+            logits=logits,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
+        )
+
+
+class BigHydraForTokenClassification(transformers.BigBirdForTokenClassification):
+    def __init__(self, config):
+        # =================
+        #super().__init__(config)
+        super(transformers.BigBirdForTokenClassification, self).__init__(config)
+        # =================
+        self.num_labels = config.num_labels
+
+        # =================
+        #self.bert = BigBirdModel(config)
+        self.bert = BigBroModel(config)
+        # =================
+        classifier_dropout = ( 
+            config.classifier_dropout if config.classifier_dropout is not None else config.hidden_dropout_prob
+        )
+        self.dropout = torch.nn.Dropout(classifier_dropout)
+        self.classifier_1 = torch.nn.Linear(config.hidden_size, config.num_labels)
+        self.classifier_2 = torch.nn.Linear(config.hidden_size, config.num_labels)
+        self.classifier_3 = torch.nn.Linear(config.hidden_size, config.num_labels)
+        self.classifier_4 = torch.nn.Linear(config.hidden_size, config.num_labels)
+        self.classifier_5 = torch.nn.Linear(config.hidden_size, config.num_labels)
+
+        # Initialize weights and apply final processing
+        self.post_init()
+
+    def _init_weights(self, module):
+        # Call to self.post_init() will redirect here instead
+        # of BigBirdPreTrainedModel.
+        """Initialize the weights"""
+        if isinstance(module, torch.nn.Linear):
+            # Slightly different from the TF version which uses truncated_normal for initialization
+            # cf https://github.com/pytorch/pytorch/pull/5617
+            module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
+            if module.bias is not None:
+                module.bias.data.zero_()
+        # =================
+        elif isinstance(module, transformers.models.roformer.modeling_roformer.RoFormerSinusoidalPositionalEmbedding):
+            pass
+        # =================
+        elif isinstance(module, torch.nn.Embedding):
+            module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
+            if module.padding_idx is not None:
+                module.weight.data[module.padding_idx].zero_()
+        elif isinstance(module, torch.nn.LayerNorm):
+            module.bias.data.zero_()
+            module.weight.data.fill_(1.0)
+
+    def forward(
+        self,
+        input_ids=None,
+        attention_mask=None,
+        token_type_ids=None,
+        position_ids=None,
+        head_mask=None,
+        inputs_embeds=None,
+        labels=None,
+        output_attentions=None,
+        output_hidden_states=None,
+        return_dict=None,
+    ):
+        r"""
+        labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
+            Labels for computing the token classification loss. Indices should be in `[0, ..., config.num_labels - 1]`.
+        """
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        outputs = self.bert(
+            input_ids,
+            attention_mask=attention_mask,
+            token_type_ids=token_type_ids,
+            position_ids=position_ids,
+            head_mask=head_mask,
+            inputs_embeds=inputs_embeds,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+
+        sequence_output = outputs[0]
+
+        sequence_output = self.dropout(sequence_output)
+        logits_1 = self.classifier_1(sequence_output)
+        logits_2 = self.classifier_2(sequence_output)
+        logits_3 = self.classifier_3(sequence_output)
+        logits_4 = self.classifier_4(sequence_output)
+        logits_5 = self.classifier_5(sequence_output)
+        logits = torch.stack((logits_1, logits_2, logits_3, logits_4, logits_5))
+
+        if labels is not None:
+            # =================
+            # Modify weights here if needed.
+            #loss_fct = torch.nn.CrossEntropyLoss()
+            #weight = torch.tensor([1.,100.], device=logits.device, dtype=logits.dtype)
+            #loss_fct = torch.nn.CrossEntropyLoss(weight=weight)
+            # =================
+            # https://github.com/pytorch/pytorch/blob/master/torch/nn/functional.py#L2938
+            loss_1 = torch.nn.functional.cross_entropy(logits_1.view(-1, self.num_labels), labels.view(-1))
+            loss_2 = torch.nn.functional.cross_entropy(logits_2.view(-1, self.num_labels), labels.view(-1))
+            loss_3 = torch.nn.functional.cross_entropy(logits_3.view(-1, self.num_labels), labels.view(-1))
+            loss_4 = torch.nn.functional.cross_entropy(logits_4.view(-1, self.num_labels), labels.view(-1))
+            loss_5 = torch.nn.functional.cross_entropy(logits_5.view(-1, self.num_labels), labels.view(-1))
+            # Mixture distribution loss.
+            loss = -torch.logsumexp(torch.stack((-loss_1, -loss_2, -loss_3, -loss_4, -loss_5)).double()-1.609, dim=0)
 
         if not return_dict:
             output = (logits,) + outputs[2:]
