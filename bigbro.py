@@ -3,12 +3,39 @@ import torch
 
 logger = transformers.utils.logging.get_logger(__name__)
 
+from transformers.modeling_outputs import (
+    BaseModelOutputWithPoolingAndCrossAttentions,
+    TokenClassifierOutput,
+)
+from transformers.models.big_bird.modeling_big_bird import (
+    BigBirdAttention,
+    BigBirdBlockSparseAttention,
+    BigBirdClassificationHead,
+    BigBirdEncoder,
+    BigBirdForSequenceClassification,
+    BigBirdForTokenClassification,
+    BigBirdForMaskedLM,
+    BigBirdIntermediate,
+    BigBirdLayer,
+    BigBirdModel,
+    BigBirdOnlyMLMHead,
+    BigBirdOutput,
+    BigBirdSelfOutput,
+)
+
+from transformers.models.roformer.modeling_roformer import (
+    RoFormerEmbeddings,
+    RoFormerSelfAttention,
+    RoFormerSinusoidalPositionalEmbedding,
+)
+
+
 # BigBro is an extension of BigBird with RoFormer position encoding.
-class BigBroBlockSparseAttention(transformers.models.big_bird.modeling_big_bird.BigBirdBlockSparseAttention):
+class BigBroBlockSparseAttention(BigBirdBlockSparseAttention):
     def __init__(self, config, seed=None):
         # =================
-        #super().__init__()
-        super(transformers.models.big_bird.modeling_big_bird.BigBirdBlockSparseAttention, self).__init__()
+        # super().__init__()
+        super(BigBirdBlockSparseAttention, self).__init__()
         # =================
 
         self.max_seqlen = config.max_position_embeddings
@@ -27,15 +54,21 @@ class BigBroBlockSparseAttention(transformers.models.big_bird.modeling_big_bird.
         self.attention_head_size = int(config.hidden_size / config.num_attention_heads)
         self.all_head_size = self.num_attention_heads * self.attention_head_size
 
-        self.query = torch.nn.Linear(config.hidden_size, self.all_head_size, bias=config.use_bias)
-        self.key = torch.nn.Linear(config.hidden_size, self.all_head_size, bias=config.use_bias)
-        self.value = torch.nn.Linear(config.hidden_size, self.all_head_size, bias=config.use_bias)
+        self.query = torch.nn.Linear(
+            config.hidden_size, self.all_head_size, bias=config.use_bias
+        )
+        self.key = torch.nn.Linear(
+            config.hidden_size, self.all_head_size, bias=config.use_bias
+        )
+        self.value = torch.nn.Linear(
+            config.hidden_size, self.all_head_size, bias=config.use_bias
+        )
         # =================
         self.rotary_value = config.rotary_value
         # =================
 
     # =================
-    #def forward(
+    # def forward(
     #    self,
     #    hidden_states,
     #    band_mask=None,
@@ -44,11 +77,11 @@ class BigBroBlockSparseAttention(transformers.models.big_bird.modeling_big_bird.
     #    from_blocked_mask=None,
     #    to_blocked_mask=None,
     #    output_attentions=None,
-    #):
+    # ):
     def forward(
         self,
         hidden_states,
-        sinusoidal_pos=None, # <===
+        sinusoidal_pos=None,  # <===
         band_mask=None,
         from_mask=None,
         to_mask=None,
@@ -56,15 +89,19 @@ class BigBroBlockSparseAttention(transformers.models.big_bird.modeling_big_bird.
         to_blocked_mask=None,
         output_attentions=None,
     ):
-    # =================
+        # =================
         # Currently this `class` can't be used in decoder.
 
         batch_size, seqlen, _ = hidden_states.size()
         to_seq_length = from_seq_length = seqlen
         from_block_size = to_block_size = self.block_size
 
-        assert from_seq_length % from_block_size == 0, "Query sided sequence length must be multiple of block size"
-        assert to_seq_length % to_block_size == 0, "Key/Value sided sequence length must be multiple of block size"
+        assert (
+            from_seq_length % from_block_size == 0
+        ), "Query sided sequence length must be multiple of block size"
+        assert (
+            to_seq_length % to_block_size == 0
+        ), "Key/Value sided sequence length must be multiple of block size"
 
         query_layer = self.transpose_for_scores(self.query(hidden_states))
         key_layer = self.transpose_for_scores(self.key(hidden_states))
@@ -72,7 +109,11 @@ class BigBroBlockSparseAttention(transformers.models.big_bird.modeling_big_bird.
         # =================
         if sinusoidal_pos is not None:
             if self.rotary_value:
-                query_layer, key_layer, value_layer = self.apply_rotary_position_embeddings(
+                (
+                    query_layer,
+                    key_layer,
+                    value_layer,
+                ) = self.apply_rotary_position_embeddings(
                     sinusoidal_pos, query_layer, key_layer, value_layer
                 )
             else:
@@ -106,11 +147,15 @@ class BigBroBlockSparseAttention(transformers.models.big_bird.modeling_big_bird.
 
         context_layer = context_layer.contiguous().view(batch_size, from_seq_length, -1)
 
-        outputs = (context_layer, attention_probs) if output_attentions else (context_layer,)
+        outputs = (
+            (context_layer, attention_probs) if output_attentions else (context_layer,)
+        )
         return outputs
 
     @staticmethod
-    def apply_rotary_position_embeddings(sinusoidal_pos, query_layer, key_layer, value_layer=None):
+    def apply_rotary_position_embeddings(
+        sinusoidal_pos, query_layer, key_layer, value_layer=None
+    ):
         # https://kexue.fm/archives/8265
         # sin [batch_size, num_heads, sequence_length, embed_size_per_head//2]
         # cos [batch_size, num_heads, sequence_length, embed_size_per_head//2]
@@ -120,40 +165,42 @@ class BigBroBlockSparseAttention(transformers.models.big_bird.modeling_big_bird.
         # cos [θ0,θ1,θ2......θd/2-1] -> cos_pos [θ0,θ0,θ1,θ1,θ2,θ2......θd/2-1,θd/2-1]
         cos_pos = torch.stack([cos, cos], dim=-1).reshape_as(sinusoidal_pos)
         # rotate_half_query_layer [-q1,q0,-q3,q2......,-qd-1,qd-2]
-        rotate_half_query_layer = torch.stack([-query_layer[..., 1::2], query_layer[..., ::2]], dim=-1).reshape_as(
-            query_layer
-        )
+        rotate_half_query_layer = torch.stack(
+            [-query_layer[..., 1::2], query_layer[..., ::2]], dim=-1
+        ).reshape_as(query_layer)
         query_layer = query_layer * cos_pos + rotate_half_query_layer * sin_pos
         # rotate_half_key_layer [-k1,k0,-k3,k2......,-kd-1,kd-2]
-        rotate_half_key_layer = torch.stack([-key_layer[..., 1::2], key_layer[..., ::2]], dim=-1).reshape_as(key_layer)
+        rotate_half_key_layer = torch.stack(
+            [-key_layer[..., 1::2], key_layer[..., ::2]], dim=-1
+        ).reshape_as(key_layer)
         key_layer = key_layer * cos_pos + rotate_half_key_layer * sin_pos
         if value_layer is not None:
             # rotate_half_value_layer [-v1,v0,-v3,v2......,-vd-1,vd-2]
-            rotate_half_value_layer = torch.stack([-value_layer[..., 1::2], value_layer[..., ::2]], dim=-1).reshape_as(
-                value_layer
-            )
+            rotate_half_value_layer = torch.stack(
+                [-value_layer[..., 1::2], value_layer[..., ::2]], dim=-1
+            ).reshape_as(value_layer)
             value_layer = value_layer * cos_pos + rotate_half_value_layer * sin_pos
             return query_layer, key_layer, value_layer
         return query_layer, key_layer
 
 
-class BigBroAttention(transformers.models.big_bird.modeling_big_bird.BigBirdAttention):
+class BigBroAttention(BigBirdAttention):
     def __init__(self, config, seed=None):
         # =================
-        #super().__init__()
-        super(transformers.models.big_bird.modeling_big_bird.BigBirdAttention, self).__init__()
+        # super().__init__()
+        super(BigBirdAttention, self).__init__()
         # =================
         self.attention_type = config.attention_type
         self.config = config
         self.seed = seed
 
         # =================
-        #if self.config.attention_type == "original_full":
+        # if self.config.attention_type == "original_full":
         #    self.self = BigBirdSelfAttention(config)
-        #elif self.config.attention_type == "block_sparse":
+        # elif self.config.attention_type == "block_sparse":
         #    self.self = BigBirdBlockSparseAttention(config, seed)
         if self.config.attention_type == "original_full":
-            self.self = transformers.models.roformer.modeling_roformer.RoFormerSelfAttention(config)
+            self.self = RoFormerSelfAttention(config)
         elif self.config.attention_type == "block_sparse":
             self.self = BigBroBlockSparseAttention(config, seed)
         # =================
@@ -163,8 +210,7 @@ class BigBroAttention(transformers.models.big_bird.modeling_big_bird.BigBirdAtte
             )
 
         # =================
-        #self.output = BigBirdSelfOutput(config)
-        self.output = transformers.models.big_bird.modeling_big_bird.BigBirdSelfOutput(config)
+        self.output = BigBirdSelfOutput(config)
         # =================
 
     def set_attention_type(self, value: str):
@@ -180,13 +226,13 @@ class BigBroAttention(transformers.models.big_bird.modeling_big_bird.BigBirdAtte
         if value == "original_full":
             # copy all weights to new full attention class
             # =================
-            #attn_weights = BigBirdSelfAttention(self.config)
-            attn_weights = transformers.models.roformer.modeling_roformer.RoFormerSelfAttention(self.config)
+            # attn_weights = BigBirdSelfAttention(self.config)
+            attn_weights = RoFormerSelfAttention(self.config)
             # =================
         else:
             # copy all weights to new sparse attention class
             # =================
-            #attn_weights = BigBirdBlockSparseAttention(self.config, self.seed)
+            # attn_weights = BigBirdBlockSparseAttention(self.config, self.seed)
             attn_weights = BigBroBlockSparseAttention(self.config, self.seed)
             # =================
 
@@ -200,7 +246,7 @@ class BigBroAttention(transformers.models.big_bird.modeling_big_bird.BigBirdAtte
             self.self.eval()
 
     # =================
-    #def forward(
+    # def forward(
     #    self,
     #    hidden_states,
     #    attention_mask=None,
@@ -215,13 +261,13 @@ class BigBroAttention(transformers.models.big_bird.modeling_big_bird.BigBirdAtte
     #    to_mask=None,
     #    from_blocked_mask=None,
     #    to_blocked_mask=None,
-    #):
+    # ):
     def forward(
         self,
         hidden_states,
         attention_mask=None,
         head_mask=None,
-        sinusoidal_pos=None, # <===
+        sinusoidal_pos=None,  # <===
         encoder_hidden_states=None,
         encoder_attention_mask=None,
         past_key_value=None,
@@ -233,7 +279,7 @@ class BigBroAttention(transformers.models.big_bird.modeling_big_bird.BigBirdAtte
         from_blocked_mask=None,
         to_blocked_mask=None,
     ):
-    # =================
+        # =================
 
         # fp16 compatibility
         if band_mask is not None:
@@ -245,7 +291,7 @@ class BigBroAttention(transformers.models.big_bird.modeling_big_bird.BigBirdAtte
 
         if self.attention_type == "original_full":
             # =================
-            #self_outputs = self.self(
+            # self_outputs = self.self(
             #    hidden_states,
             #    attention_mask,
             #    head_mask,
@@ -253,11 +299,11 @@ class BigBroAttention(transformers.models.big_bird.modeling_big_bird.BigBirdAtte
             #    encoder_attention_mask,
             #    past_key_value,
             #    output_attentions,
-            #)
+            # )
             self_outputs = self.self(
                 hidden_states,
                 attention_mask,
-                sinusoidal_pos, # <===
+                sinusoidal_pos,  # <===
                 head_mask,
                 encoder_hidden_states,
                 encoder_attention_mask,
@@ -270,50 +316,61 @@ class BigBroAttention(transformers.models.big_bird.modeling_big_bird.BigBirdAtte
                 encoder_hidden_states is None
             ), "BigBird cannot be used as a decoder when config.attention_type != 'original_full'"
             # =================
-            #self_outputs = self.self(
+            # self_outputs = self.self(
             #    hidden_states, band_mask, from_mask, to_mask, from_blocked_mask, to_blocked_mask, output_attentions
-            #)
+            # )
             self_outputs = self.self(
-                hidden_states, sinusoidal_pos, band_mask, from_mask, to_mask, from_blocked_mask, to_blocked_mask, output_attentions
+                hidden_states,
+                sinusoidal_pos,
+                band_mask,
+                from_mask,
+                to_mask,
+                from_blocked_mask,
+                to_blocked_mask,
+                output_attentions,
             )
             # =================
 
         attention_output = self.output(self_outputs[0], hidden_states)
-        outputs = (attention_output,) + self_outputs[1:]  # add attentions if we output them
+        outputs = (attention_output,) + self_outputs[
+            1:
+        ]  # add attentions if we output them
         return outputs
 
 
-class BigBroLayer(transformers.models.big_bird.modeling_big_bird.BigBirdLayer):
+class BigBroLayer(BigBirdLayer):
     def __init__(self, config, seed=None):
         # =================
-        #super().__init__()
-        super(transformers.models.big_bird.modeling_big_bird.BigBirdLayer, self).__init__()
+        # super().__init__()
+        super(BigBirdLayer, self).__init__()
         # =================
         self.config = config
         self.attention_type = config.attention_type
         self.chunk_size_feed_forward = config.chunk_size_feed_forward
         self.seq_len_dim = 1
         # =================
-        #self.attention = BigBirdAttention(config, seed=seed)
+        # self.attention = BigBirdAttention(config, seed=seed)
         self.attention = BigBroAttention(config, seed=seed)
         # =================
         self.is_decoder = config.is_decoder
         self.add_cross_attention = config.add_cross_attention
         # =================
-        #if self.add_cross_attention:
+        # if self.add_cross_attention:
         #    assert self.is_decoder, f"{self} should be used as a decoder model if cross attention is added"
         #    self.crossattention = BigBirdAttention(config)
-        #self.intermediate = BigBirdIntermediate(config)
-        #self.output = BigBirdOutput(config)
+        # self.intermediate = BigBirdIntermediate(config)
+        # self.output = BigBirdOutput(config)
         if self.add_cross_attention:
-            assert self.is_decoder, f"{self} should be used as a decoder model if cross attention is added"
+            assert (
+                self.is_decoder
+            ), f"{self} should be used as a decoder model if cross attention is added"
             self.crossattention = BigBroAttention(config)
-        self.intermediate = transformers.models.big_bird.modeling_big_bird.BigBirdIntermediate(config)
-        self.output = transformers.models.big_bird.modeling_big_bird.BigBirdOutput(config)
+        self.intermediate = BigBirdIntermediate(config)
+        self.output = BigBirdOutput(config)
         # =================
 
     # =================
-    #def forward(
+    # def forward(
     #    self,
     #    hidden_states,
     #    attention_mask=None,
@@ -326,12 +383,12 @@ class BigBroLayer(transformers.models.big_bird.modeling_big_bird.BigBirdLayer):
     #    blocked_encoder_mask=None,
     #    past_key_value=None,
     #    output_attentions=False,
-    #):
+    # ):
     def forward(
         self,
         hidden_states,
         attention_mask=None,
-        sinusoidal_pos=None, # <===
+        sinusoidal_pos=None,  # <===
         head_mask=None,
         encoder_hidden_states=None,
         encoder_attention_mask=None,
@@ -342,11 +399,13 @@ class BigBroLayer(transformers.models.big_bird.modeling_big_bird.BigBirdLayer):
         past_key_value=None,
         output_attentions=False,
     ):
-    # =================
-        # decoder uni-directional self-attention cached key/values tuple is at positions 1,2
-        self_attn_past_key_value = past_key_value[:2] if past_key_value is not None else None
         # =================
-        #self_attention_outputs = self.attention(
+        # decoder uni-directional self-attention cached key/values tuple is at positions 1,2
+        self_attn_past_key_value = (
+            past_key_value[:2] if past_key_value is not None else None
+        )
+        # =================
+        # self_attention_outputs = self.attention(
         #    hidden_states,
         #    attention_mask,
         #    head_mask,
@@ -359,12 +418,12 @@ class BigBroLayer(transformers.models.big_bird.modeling_big_bird.BigBirdLayer):
         #    to_mask=to_mask,
         #    from_blocked_mask=blocked_encoder_mask,
         #    to_blocked_mask=blocked_encoder_mask,
-        #)
+        # )
         self_attention_outputs = self.attention(
             hidden_states,
             attention_mask,
             head_mask,
-            sinusoidal_pos, # <===
+            sinusoidal_pos,  # <===
             encoder_hidden_states=encoder_hidden_states,
             encoder_attention_mask=encoder_attention_mask,
             past_key_value=self_attn_past_key_value,
@@ -383,7 +442,9 @@ class BigBroLayer(transformers.models.big_bird.modeling_big_bird.BigBirdLayer):
             outputs = self_attention_outputs[1:-1]
             present_key_value = self_attention_outputs[-1]
         else:
-            outputs = self_attention_outputs[1:]  # add self attentions if we output attention weights
+            outputs = self_attention_outputs[
+                1:
+            ]  # add self attentions if we output attention weights
 
         cross_attn_present_key_value = None
         if self.is_decoder and encoder_hidden_states is not None:
@@ -394,9 +455,11 @@ class BigBroLayer(transformers.models.big_bird.modeling_big_bird.BigBirdLayer):
                 )
 
             # cross_attn cached key/values tuple is at positions 3,4 of past_key_value tuple
-            cross_attn_past_key_value = past_key_value[-2:] if past_key_value is not None else None
+            cross_attn_past_key_value = (
+                past_key_value[-2:] if past_key_value is not None else None
+            )
             # =================
-            #cross_attention_outputs = self.crossattention(
+            # cross_attention_outputs = self.crossattention(
             #    attention_output,
             #    attention_mask,
             #    head_mask,
@@ -404,11 +467,11 @@ class BigBroLayer(transformers.models.big_bird.modeling_big_bird.BigBirdLayer):
             #    encoder_attention_mask,
             #    cross_attn_past_key_value,
             #    output_attentions,
-            #)
+            # )
             cross_attention_outputs = self.crossattention(
                 attention_output,
                 attention_mask,
-                sinusoidal_pos, # <===
+                sinusoidal_pos,  # <===
                 head_mask,
                 encoder_hidden_states,
                 encoder_attention_mask,
@@ -417,14 +480,19 @@ class BigBroLayer(transformers.models.big_bird.modeling_big_bird.BigBirdLayer):
             )
             # =================
             attention_output = cross_attention_outputs[0]
-            outputs = outputs + cross_attention_outputs[1:-1]  # add cross attentions if we output attention weights
+            outputs = (
+                outputs + cross_attention_outputs[1:-1]
+            )  # add cross attentions if we output attention weights
 
             # add cross-attn cache to positions 3,4 of present_key_value tuple
             cross_attn_present_key_value = cross_attention_outputs[-1]
             present_key_value = present_key_value + cross_attn_present_key_value
 
         layer_output = transformers.modeling_utils.apply_chunking_to_forward(
-            self.feed_forward_chunk, self.chunk_size_feed_forward, self.seq_len_dim, attention_output
+            self.feed_forward_chunk,
+            self.chunk_size_feed_forward,
+            self.seq_len_dim,
+            attention_output,
         )
 
         outputs = (layer_output,) + outputs
@@ -436,23 +504,27 @@ class BigBroLayer(transformers.models.big_bird.modeling_big_bird.BigBirdLayer):
         return outputs
 
 
-class BigBroEncoder(transformers.models.big_bird.modeling_big_bird.BigBirdEncoder):
+class BigBroEncoder(BigBirdEncoder):
     def __init__(self, config):
         # =================
-        #super().__init__()
-        super(transformers.models.big_bird.modeling_big_bird.BigBirdEncoder, self).__init__()
+        # super().__init__()
+        super(BigBirdEncoder, self).__init__()
         # =================
         self.config = config
         self.attention_type = config.attention_type
         # =================
-        #self.layer = nn.ModuleList(
+        # self.layer = nn.ModuleList(
         #    [BigBirdLayer(config, seed=layer_idx) for layer_idx in range(config.num_hidden_layers)]
-        #)
-        self.embed_positions = transformers.models.roformer.modeling_roformer.RoFormerSinusoidalPositionalEmbedding(
-            config.max_position_embeddings, config.hidden_size // config.num_attention_heads
+        # )
+        self.embed_positions = RoFormerSinusoidalPositionalEmbedding(
+            config.max_position_embeddings,
+            config.hidden_size // config.num_attention_heads,
         )
         self.layer = torch.nn.ModuleList(
-            [BigBroLayer(config, seed=layer_idx) for layer_idx in range(config.num_hidden_layers)]
+            [
+                BigBroLayer(config, seed=layer_idx)
+                for layer_idx in range(config.num_hidden_layers)
+            ]
         )
         # =================
         self.gradient_checkpointing = False
@@ -476,10 +548,14 @@ class BigBroEncoder(transformers.models.big_bird.modeling_big_bird.BigBirdEncode
     ):
         all_hidden_states = () if output_hidden_states else None
         all_self_attentions = () if output_attentions else None
-        all_cross_attentions = () if output_attentions and self.config.add_cross_attention else None
+        all_cross_attentions = (
+            () if output_attentions and self.config.add_cross_attention else None
+        )
 
         # =================
-        sinusoidal_pos = self.embed_positions(hidden_states.shape[:-1])[None, None, :, :]
+        sinusoidal_pos = self.embed_positions(hidden_states.shape[:-1])[
+            None, None, :, :
+        ]
         # =================
 
         next_decoder_cache = () if use_cache else None
@@ -492,7 +568,6 @@ class BigBroEncoder(transformers.models.big_bird.modeling_big_bird.BigBirdEncode
             past_key_value = past_key_values[i] if past_key_values is not None else None
 
             if self.gradient_checkpointing and self.training:
-
                 if use_cache:
                     logger.warning(
                         "`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`..."
@@ -506,7 +581,7 @@ class BigBroEncoder(transformers.models.big_bird.modeling_big_bird.BigBirdEncode
                     return custom_forward
 
                 # =================
-                #layer_outputs = torch.utils.checkpoint.checkpoint(
+                # layer_outputs = torch.utils.checkpoint.checkpoint(
                 #    create_custom_forward(layer_module),
                 #    hidden_states,
                 #    attention_mask,
@@ -517,12 +592,12 @@ class BigBroEncoder(transformers.models.big_bird.modeling_big_bird.BigBirdEncode
                 #    from_mask,
                 #    to_mask,
                 #    blocked_encoder_mask,
-                #)
-                layer_outputs = torch.utils.checkpoint.checkpoint(
+                # )
+                layer_outputs = torch.utils.checkpoint.checkpoint(  # type: ignore
                     create_custom_forward(layer_module),
                     hidden_states,
                     attention_mask,
-                    sinusoidal_pos, # <===
+                    sinusoidal_pos,  # <===
                     layer_head_mask,
                     encoder_hidden_states,
                     encoder_attention_mask,
@@ -533,9 +608,8 @@ class BigBroEncoder(transformers.models.big_bird.modeling_big_bird.BigBirdEncode
                 )
                 # =================
             else:
-
                 # =================
-                #layer_outputs = layer_module(
+                # layer_outputs = layer_module(
                 #    hidden_states,
                 #    attention_mask,
                 #    layer_head_mask,
@@ -547,11 +621,11 @@ class BigBroEncoder(transformers.models.big_bird.modeling_big_bird.BigBirdEncode
                 #    blocked_encoder_mask,
                 #    past_key_value,
                 #    output_attentions,
-                #)
+                # )
                 layer_outputs = layer_module(
                     hidden_states,
                     attention_mask,
-                    sinusoidal_pos, # <===
+                    sinusoidal_pos,  # <===
                     layer_head_mask,
                     encoder_hidden_states,
                     encoder_attention_mask,
@@ -596,11 +670,11 @@ class BigBroEncoder(transformers.models.big_bird.modeling_big_bird.BigBirdEncode
         )
 
 
-class BigBroModel(transformers.BigBirdModel):
+class BigBroModel(BigBirdModel):
     def __init__(self, config, add_pooling_layer=True):
         # =================
-        #super().__init__(config)
-        super(transformers.BigBirdModel, self).__init__(config)
+        # super().__init__(config)
+        super(BigBirdModel, self).__init__(config)
         # =================
         self.attention_type = self.config.attention_type
         self.config = config
@@ -608,11 +682,13 @@ class BigBroModel(transformers.BigBirdModel):
         self.block_size = self.config.block_size
 
         # =================
-        #self.embeddings = BigBirdEmbeddings(config)
-        #self.encoder = BigBirdEncoder(config)
-        self.embeddings = transformers.models.roformer.modeling_roformer.RoFormerEmbeddings(config)
+        # self.embeddings = BigBirdEmbeddings(config)
+        # self.encoder = BigBirdEncoder(config)
+        self.embeddings = RoFormerEmbeddings(config)
         if config.embedding_size != config.hidden_size:
-            self.embeddings_project = torch.nn.Linear(config.embedding_size, config.hidden_size)
+            self.embeddings_project = torch.nn.Linear(
+                config.embedding_size, config.hidden_size
+            )
         self.encoder = BigBroEncoder(config)
         # =================
 
@@ -630,7 +706,7 @@ class BigBroModel(transformers.BigBirdModel):
             self.set_attention_type("original_full")
 
         self.init_weights()
-    
+
     def _init_weights(self, module):
         """Initialize the weights"""
         if isinstance(module, torch.nn.Linear):
@@ -640,7 +716,10 @@ class BigBroModel(transformers.BigBirdModel):
             if module.bias is not None:
                 module.bias.data.zero_()
         # =================
-        elif isinstance(module, transformers.models.roformer.modeling_roformer.RoFormerSinusoidalPositionalEmbedding):
+        elif isinstance(
+            module,
+            RoFormerSinusoidalPositionalEmbedding,
+        ):
             pass
         # =================
         elif isinstance(module, torch.nn.Embedding):
@@ -650,7 +729,6 @@ class BigBroModel(transformers.BigBirdModel):
         elif isinstance(module, torch.nn.LayerNorm):
             module.bias.data.zero_()
             module.weight.data.fill_(1.0)
-
 
     def forward(
         self,
@@ -668,12 +746,19 @@ class BigBroModel(transformers.BigBirdModel):
         output_hidden_states=None,
         return_dict=None,
     ):
-
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+        output_attentions = (
+            output_attentions
+            if output_attentions is not None
+            else self.config.output_attentions
         )
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        output_hidden_states = (
+            output_hidden_states
+            if output_hidden_states is not None
+            else self.config.output_hidden_states
+        )
+        return_dict = (
+            return_dict if return_dict is not None else self.config.use_return_dict
+        )
 
         if self.config.is_decoder:
             use_cache = use_cache if use_cache is not None else self.config.use_cache
@@ -681,7 +766,9 @@ class BigBroModel(transformers.BigBirdModel):
             use_cache = False
 
         if input_ids is not None and inputs_embeds is not None:
-            raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
+            raise ValueError(
+                "You cannot specify both input_ids and inputs_embeds at the same time"
+            )
         elif input_ids is not None:
             input_shape = input_ids.size()
         elif inputs_embeds is not None:
@@ -693,26 +780,38 @@ class BigBroModel(transformers.BigBirdModel):
         device = input_ids.device if input_ids is not None else inputs_embeds.device
 
         # past_key_values_length
-        past_key_values_length = past_key_values[0][0].shape[2] if past_key_values is not None else 0
+        past_key_values_length = (
+            past_key_values[0][0].shape[2] if past_key_values is not None else 0
+        )
 
         if attention_mask is None:
-            attention_mask = torch.ones(((batch_size, seq_length + past_key_values_length)), device=device)
+            attention_mask = torch.ones(
+                ((batch_size, seq_length + past_key_values_length)), device=device
+            )
         if token_type_ids is None:
             if hasattr(self.embeddings, "token_type_ids"):
                 buffered_token_type_ids = self.embeddings.token_type_ids[:, :seq_length]
-                buffered_token_type_ids_expanded = buffered_token_type_ids.expand(batch_size, seq_length)
+                buffered_token_type_ids_expanded = buffered_token_type_ids.expand(
+                    batch_size, seq_length
+                )
                 token_type_ids = buffered_token_type_ids_expanded
             else:
-                token_type_ids = torch.zeros(input_shape, dtype=torch.long, device=device)
+                token_type_ids = torch.zeros(
+                    input_shape, dtype=torch.long, device=device
+                )
 
         # in order to use block_sparse attention, sequence_length has to be at least
         # bigger than all global attentions: 2 * block_size
         # + sliding tokens: 3 * block_size
         # + random tokens: 2 * num_random_blocks * block_size
-        max_tokens_to_attend = (5 + 2 * self.config.num_random_blocks) * self.config.block_size
+        max_tokens_to_attend = (
+            5 + 2 * self.config.num_random_blocks
+        ) * self.config.block_size
         if self.attention_type == "block_sparse" and seq_length <= max_tokens_to_attend:
             # change attention_type from block_sparse to original_full
-            sequence_length = input_ids.size(1) if input_ids is not None else inputs_embeds.size(1)
+            sequence_length = (
+                input_ids.size(1) if input_ids is not None else inputs_embeds.size(1)
+            )
             logger.warning(
                 "Attention type 'block_sparse' is not possible if sequence_length: "
                 f"{sequence_length} <= num global tokens: 2 * config.block_size "
@@ -746,9 +845,12 @@ class BigBroModel(transformers.BigBirdModel):
             padding_len = 0
 
         if self.attention_type == "block_sparse":
-            blocked_encoder_mask, band_mask, from_mask, to_mask = self.create_masks_for_block_sparse_attn(
-                attention_mask, self.block_size
-            )
+            (
+                blocked_encoder_mask,
+                band_mask,
+                from_mask,
+                to_mask,
+            ) = self.create_masks_for_block_sparse_attn(attention_mask, self.block_size)
             extended_attention_mask = None
 
         elif self.attention_type == "original_full":
@@ -769,11 +871,17 @@ class BigBroModel(transformers.BigBirdModel):
         # If a 2D or 3D attention mask is provided for the cross-attention
         # we need to make broadcastable to [batch_size, num_heads, seq_length, seq_length]
         if self.config.is_decoder and encoder_hidden_states is not None:
-            encoder_batch_size, encoder_sequence_length, _ = encoder_hidden_states.size()
+            (
+                encoder_batch_size,
+                encoder_sequence_length,
+                _,
+            ) = encoder_hidden_states.size()
             encoder_hidden_shape = (encoder_batch_size, encoder_sequence_length)
             if encoder_attention_mask is None:
                 encoder_attention_mask = torch.ones(encoder_hidden_shape, device=device)
-            encoder_extended_attention_mask = self.invert_attention_mask(encoder_attention_mask)
+            encoder_extended_attention_mask = self.invert_attention_mask(
+                encoder_attention_mask
+            )
         else:
             encoder_extended_attention_mask = None
 
@@ -785,13 +893,13 @@ class BigBroModel(transformers.BigBirdModel):
         head_mask = self.get_head_mask(head_mask, self.config.num_hidden_layers)
 
         # =================
-        #embedding_output = self.embeddings(
+        # embedding_output = self.embeddings(
         #    input_ids=input_ids,
         #    position_ids=position_ids,
         #    token_type_ids=token_type_ids,
         #    inputs_embeds=inputs_embeds,
         #    past_key_values_length=past_key_values_length,
-        #)
+        # )
         embedding_output = self.embeddings(
             input_ids=input_ids,
             token_type_ids=token_type_ids,
@@ -819,7 +927,11 @@ class BigBroModel(transformers.BigBirdModel):
         )
         sequence_output = encoder_outputs[0]
 
-        pooler_output = self.activation(self.pooler(sequence_output[:, 0, :])) if (self.pooler is not None) else None
+        pooler_output = (
+            self.activation(self.pooler(sequence_output[:, 0, :]))
+            if (self.pooler is not None)
+            else None
+        )
 
         # undo padding
         if padding_len > 0:
@@ -829,7 +941,7 @@ class BigBroModel(transformers.BigBirdModel):
         if not return_dict:
             return (sequence_output, pooler_output) + encoder_outputs[1:]
 
-        return transformers.modeling_outputs.BaseModelOutputWithPoolingAndCrossAttentions(
+        return BaseModelOutputWithPoolingAndCrossAttentions(
             last_hidden_state=sequence_output,
             pooler_output=pooler_output,
             past_key_values=encoder_outputs.past_key_values,
@@ -849,24 +961,24 @@ class BigBroModel(transformers.BigBirdModel):
     def load_from_file(cls, path):
         state_dict = torch.load(path)
         config = state_dict.pop("self.config")
-        model = cls(config = config)
+        model = cls(config=config)
         model.load_state_dict(state_dict)
         return model
 
 
-class BigBroForSequenceClassification(transformers.BigBirdForSequenceClassification):
+class BigBroForSequenceClassification(BigBirdForSequenceClassification):
     def __init__(self, config):
         # =================
-        #super().__init__(config)
-        super(transformers.BigBirdForSequenceClassification, self).__init__(config)
+        # super().__init__(config)
+        super(BigBirdForSequenceClassification, self).__init__(config)
         # =================
         self.num_labels = config.num_labels
         self.config = config
         # =================
-        #self.bert = BigBirdModel(config)
+        # self.bert = BigBirdModel(config)
         self.bert = BigBroModel(config)
         # =================
-        self.classifier = transformers.models.big_bird.modeling_big_bird.BigBirdClassificationHead(config)
+        self.classifier = BigBirdClassificationHead(config)
 
         self.init_weights()
 
@@ -879,7 +991,10 @@ class BigBroForSequenceClassification(transformers.BigBirdForSequenceClassificat
             if module.bias is not None:
                 module.bias.data.zero_()
         # =================
-        elif isinstance(module, transformers.models.roformer.modeling_roformer.RoFormerSinusoidalPositionalEmbedding):
+        elif isinstance(
+            module,
+            RoFormerSinusoidalPositionalEmbedding,
+        ):
             pass
         # =================
         elif isinstance(module, torch.nn.Embedding):
@@ -891,11 +1006,11 @@ class BigBroForSequenceClassification(transformers.BigBirdForSequenceClassificat
             module.weight.data.fill_(1.0)
 
 
-class BigBroForMaskedLM(transformers.BigBirdForMaskedLM):
+class BigBroForMaskedLM(BigBirdForMaskedLM):
     def __init__(self, config):
         # =================
-        #super().__init__(config)
-        super(transformers.BigBirdForMaskedLM, self).__init__(config)
+        # super().__init__(config)
+        super(BigBirdForMaskedLM, self).__init__(config)
         # =================
 
         if config.is_decoder:
@@ -905,10 +1020,10 @@ class BigBroForMaskedLM(transformers.BigBirdForMaskedLM):
             )
 
         # =================
-        #self.bert = BigBirdModel(config)
+        # self.bert = BigBirdModel(config)
         self.bert = BigBroModel(config)
         # =================
-        self.cls = transformers.models.big_bird.modeling_big_bird.BigBirdOnlyMLMHead(config)
+        self.cls = BigBirdOnlyMLMHead(config)
 
         self.init_weights()
 
@@ -921,7 +1036,10 @@ class BigBroForMaskedLM(transformers.BigBirdForMaskedLM):
             if module.bias is not None:
                 module.bias.data.zero_()
         # =================
-        elif isinstance(module, transformers.models.roformer.modeling_roformer.RoFormerSinusoidalPositionalEmbedding):
+        elif isinstance(
+            module,
+            RoFormerSinusoidalPositionalEmbedding,
+        ):
             pass
         # =================
         elif isinstance(module, torch.nn.Embedding):
@@ -933,20 +1051,22 @@ class BigBroForMaskedLM(transformers.BigBirdForMaskedLM):
             module.weight.data.fill_(1.0)
 
 
-class BigBroForTokenClassification(transformers.BigBirdForTokenClassification):
+class BigBroForTokenClassification(BigBirdForTokenClassification):
     def __init__(self, config):
         # =================
-        #super().__init__(config)
-        super(transformers.BigBirdForTokenClassification, self).__init__(config)
+        # super().__init__(config)
+        super(BigBirdForTokenClassification, self).__init__(config)
         # =================
         self.num_labels = config.num_labels
 
         # =================
-        #self.bert = BigBirdModel(config)
+        # self.bert = BigBirdModel(config)
         self.bert = BigBroModel(config)
         # =================
-        classifier_dropout = ( 
-            config.classifier_dropout if config.classifier_dropout is not None else config.hidden_dropout_prob
+        classifier_dropout = (
+            config.classifier_dropout
+            if config.classifier_dropout is not None
+            else config.hidden_dropout_prob
         )
         self.dropout = torch.nn.Dropout(classifier_dropout)
         self.classifier = torch.nn.Linear(config.hidden_size, config.num_labels)
@@ -965,7 +1085,10 @@ class BigBroForTokenClassification(transformers.BigBirdForTokenClassification):
             if module.bias is not None:
                 module.bias.data.zero_()
         # =================
-        elif isinstance(module, transformers.models.roformer.modeling_roformer.RoFormerSinusoidalPositionalEmbedding):
+        elif isinstance(
+            module,
+            RoFormerSinusoidalPositionalEmbedding,
+        ):
             pass
         # =================
         elif isinstance(module, torch.nn.Embedding):
@@ -993,7 +1116,9 @@ class BigBroForTokenClassification(transformers.BigBirdForTokenClassification):
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
             Labels for computing the token classification loss. Indices should be in `[0, ..., config.num_labels - 1]`.
         """
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        return_dict = (
+            return_dict if return_dict is not None else self.config.use_return_dict
+        )
 
         outputs = self.bert(
             input_ids,
@@ -1016,8 +1141,8 @@ class BigBroForTokenClassification(transformers.BigBirdForTokenClassification):
         if labels is not None:
             # =================
             # Modify weights here if needed.
-            #loss_fct = CrossEntropyLoss()
-            #weight = torch.tensor([1.,100.], device=logits.device, dtype=logits.dtype)
+            # loss_fct = CrossEntropyLoss()
+            # weight = torch.tensor([1.,100.], device=logits.device, dtype=logits.dtype)
             loss_fct = torch.nn.CrossEntropyLoss(weight=weight)
             # =================
             loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
@@ -1027,128 +1152,9 @@ class BigBroForTokenClassification(transformers.BigBirdForTokenClassification):
             return ((loss,) + output) if loss is not None else output
 
         # =================
-        #return TokenClassifierOutput(
-        return transformers.modeling_outputs.TokenClassifierOutput(
-        # =================
-            loss=loss,
-            logits=logits,
-            hidden_states=outputs.hidden_states,
-            attentions=outputs.attentions,
-        )
-
-
-class BigHydraForTokenClassification(transformers.BigBirdForTokenClassification):
-    def __init__(self, config):
-        # =================
-        #super().__init__(config)
-        super(transformers.BigBirdForTokenClassification, self).__init__(config)
-        # =================
-        self.num_labels = config.num_labels
-
-        # =================
-        #self.bert = BigBirdModel(config)
-        self.bert = BigBroModel(config)
-        # =================
-        classifier_dropout = ( 
-            config.classifier_dropout if config.classifier_dropout is not None else config.hidden_dropout_prob
-        )
-        self.dropout = torch.nn.Dropout(classifier_dropout)
-        self.classifier_1 = torch.nn.Linear(config.hidden_size, config.num_labels)
-        self.classifier_2 = torch.nn.Linear(config.hidden_size, config.num_labels)
-        self.classifier_3 = torch.nn.Linear(config.hidden_size, config.num_labels)
-        self.classifier_4 = torch.nn.Linear(config.hidden_size, config.num_labels)
-        self.classifier_5 = torch.nn.Linear(config.hidden_size, config.num_labels)
-
-        # Initialize weights and apply final processing
-        self.post_init()
-
-    def _init_weights(self, module):
-        # Call to self.post_init() will redirect here instead
-        # of BigBirdPreTrainedModel.
-        """Initialize the weights"""
-        if isinstance(module, torch.nn.Linear):
-            # Slightly different from the TF version which uses truncated_normal for initialization
-            # cf https://github.com/pytorch/pytorch/pull/5617
-            module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
-            if module.bias is not None:
-                module.bias.data.zero_()
-        # =================
-        elif isinstance(module, transformers.models.roformer.modeling_roformer.RoFormerSinusoidalPositionalEmbedding):
-            pass
-        # =================
-        elif isinstance(module, torch.nn.Embedding):
-            module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
-            if module.padding_idx is not None:
-                module.weight.data[module.padding_idx].zero_()
-        elif isinstance(module, torch.nn.LayerNorm):
-            module.bias.data.zero_()
-            module.weight.data.fill_(1.0)
-
-    def forward(
-        self,
-        input_ids=None,
-        attention_mask=None,
-        token_type_ids=None,
-        position_ids=None,
-        head_mask=None,
-        inputs_embeds=None,
-        labels=None,
-        output_attentions=None,
-        output_hidden_states=None,
-        return_dict=None,
-    ):
-        r"""
-        labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
-            Labels for computing the token classification loss. Indices should be in `[0, ..., config.num_labels - 1]`.
-        """
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
-        outputs = self.bert(
-            input_ids,
-            attention_mask=attention_mask,
-            token_type_ids=token_type_ids,
-            position_ids=position_ids,
-            head_mask=head_mask,
-            inputs_embeds=inputs_embeds,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
-        )
-
-        sequence_output = outputs[0]
-
-        sequence_output = self.dropout(sequence_output)
-        logits_1 = self.classifier_1(sequence_output)
-        logits_2 = self.classifier_2(sequence_output)
-        logits_3 = self.classifier_3(sequence_output)
-        logits_4 = self.classifier_4(sequence_output)
-        logits_5 = self.classifier_5(sequence_output)
-        logits = torch.stack((logits_1, logits_2, logits_3, logits_4, logits_5))
-
-        if labels is not None:
+        # return TokenClassifierOutput(
+        return TokenClassifierOutput(
             # =================
-            # Modify weights here if needed.
-            #loss_fct = torch.nn.CrossEntropyLoss()
-            #weight = torch.tensor([1.,100.], device=logits.device, dtype=logits.dtype)
-            #loss_fct = torch.nn.CrossEntropyLoss(weight=weight)
-            # =================
-            # https://github.com/pytorch/pytorch/blob/master/torch/nn/functional.py#L2938
-            loss_1 = torch.nn.functional.cross_entropy(logits_1.view(-1, self.num_labels), labels.view(-1))
-            loss_2 = torch.nn.functional.cross_entropy(logits_2.view(-1, self.num_labels), labels.view(-1))
-            loss_3 = torch.nn.functional.cross_entropy(logits_3.view(-1, self.num_labels), labels.view(-1))
-            loss_4 = torch.nn.functional.cross_entropy(logits_4.view(-1, self.num_labels), labels.view(-1))
-            loss_5 = torch.nn.functional.cross_entropy(logits_5.view(-1, self.num_labels), labels.view(-1))
-            # Mixture distribution loss.
-            loss = -torch.logsumexp(torch.stack((-loss_1, -loss_2, -loss_3, -loss_4, -loss_5)).double()-1.609, dim=0)
-
-        if not return_dict:
-            output = (logits,) + outputs[2:]
-            return ((loss,) + output) if loss is not None else output
-
-        # =================
-        #return TokenClassifierOutput(
-        return transformers.modeling_outputs.TokenClassifierOutput(
-        # =================
             loss=loss,
             logits=logits,
             hidden_states=outputs.hidden_states,
