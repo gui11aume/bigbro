@@ -516,10 +516,14 @@ class BigBroEncoder(BigBirdEncoder):
         # self.layer = nn.ModuleList(
         #    [BigBirdLayer(config, seed=layer_idx) for layer_idx in range(config.num_hidden_layers)]
         # )
-        self.embed_positions = RoFormerSinusoidalPositionalEmbedding(
-            config.max_position_embeddings,
-            config.hidden_size // config.num_attention_heads,
-        )
+        self.embed_positions = {
+           # Wrap in a dictionary to hide the 'torch_no_grad'
+           # statements from the FSDP engine.
+              "module": RoFormerSinusoidalPositionalEmbedding(
+                  config.max_position_embeddings,
+                  config.hidden_size // config.num_attention_heads,
+               )
+        }
         self.layer = torch.nn.ModuleList(
             [
                 BigBroLayer(config, seed=layer_idx)
@@ -553,9 +557,8 @@ class BigBroEncoder(BigBirdEncoder):
         )
 
         # =================
-        sinusoidal_pos = self.embed_positions(hidden_states.shape[:-1])[
-            None, None, :, :
-        ]
+        embed = self.embed_positions["module"].to(hidden_states.device, hidden_states.dtype)
+        sinusoidal_pos = embed(hidden_states.shape[:-1])[ None, None, :, : ]
         # =================
 
         next_decoder_cache = () if use_cache else None
